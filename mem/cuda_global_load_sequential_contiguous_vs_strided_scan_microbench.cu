@@ -16,17 +16,69 @@
 constexpr int WARP  = 32;
 constexpr int ITERS = 1 << 20;
 
+// -------------------- inline PTX global loads --------------------
+// This is used for prevent compiler from giving LOAD instructions using 
+// read-only L1 cache.
 template <typename T>
-__global__ void load_contiguous_kernel(const T* __restrict__ in,
-                                       volatile unsigned long long* __restrict__ sink,
+__device__ __forceinline__ T ld_global_ca(const T* p);
+
+template <>
+__device__ __forceinline__ uint8_t ld_global_ca<uint8_t>(const uint8_t* p) {
+    unsigned int v;
+    asm volatile(
+        "ld.global.ca.u8 %0, [%1];\n"
+        : "=r"(v)
+        : "l"(p)
+    );
+    return static_cast<uint8_t>(v);
+}
+
+template <>
+__device__ __forceinline__ uint16_t ld_global_ca<uint16_t>(const uint16_t* p) {
+    unsigned int v;
+    asm volatile(
+        "ld.global.ca.u16 %0, [%1];\n"
+        : "=r"(v)
+        : "l"(p)
+    );
+    return static_cast<uint16_t>(v);
+}
+
+template <>
+__device__ __forceinline__ uint32_t ld_global_ca<uint32_t>(const uint32_t* p) {
+    unsigned int v;
+    asm volatile(
+        "ld.global.ca.u32 %0, [%1];\n"
+        : "=r"(v)
+        : "l"(p)
+    );
+    return static_cast<uint32_t>(v);
+}
+
+template <>
+__device__ __forceinline__ uint64_t ld_global_ca<uint64_t>(const uint64_t* p) {
+    unsigned long long v;
+    asm volatile(
+        "ld.global.ca.u64 %0, [%1];\n"
+        : "=l"(v)
+        : "l"(p)
+    );
+    return static_cast<uint64_t>(v);
+}
+
+// -------------------- kernels --------------------
+
+template <typename T>
+__global__ void load_contiguous_kernel(const T* in,
+                                       volatile unsigned long long* sink,
                                        int iters) {
     int lane = threadIdx.x;
     unsigned long long acc = 0;
 
     #pragma unroll 1
     for (int t = 0; t < iters; ++t) {
-        size_t base = static_cast<size_t>(t) * WARP;
-        T v = in[base + lane];
+        size_t idx = static_cast<size_t>(t) * WARP + lane;
+        T v = ld_global_ca<T>(in + idx);
         acc += static_cast<unsigned long long>(v);
     }
 
@@ -34,8 +86,8 @@ __global__ void load_contiguous_kernel(const T* __restrict__ in,
 }
 
 template <typename T>
-__global__ void load_stride_kernel(const T* __restrict__ in,
-                                   volatile unsigned long long* __restrict__ sink,
+__global__ void load_stride_kernel(const T* in,
+                                   volatile unsigned long long* sink,
                                    int iters,
                                    size_t stride_elems) {
     int lane = threadIdx.x;
@@ -43,13 +95,16 @@ __global__ void load_stride_kernel(const T* __restrict__ in,
 
     #pragma unroll 1
     for (int t = 0; t < iters; ++t) {
-        size_t base = static_cast<size_t>(t) * WARP * stride_elems;
-        T v = in[base + lane * stride_elems];
+        size_t idx = static_cast<size_t>(t) * WARP * stride_elems
+                   + static_cast<size_t>(lane) * stride_elems;
+        T v = ld_global_ca<T>(in + idx);
         acc += static_cast<unsigned long long>(v);
     }
 
     sink[lane] = acc;
 }
+
+// -------------------- host helpers --------------------
 
 template <typename T>
 T* make_device_input(size_t n_elems) {
@@ -75,7 +130,7 @@ T* make_device_input(size_t n_elems) {
 
 template <typename T>
 void run_contiguous(const char* label) {
-    size_t n_elems = static_cast<size_t>(ITERS) * WARP;
+    size_t n_elems   = static_cast<size_t>(ITERS) * WARP;
     size_t out_bytes = WARP * sizeof(unsigned long long);
 
     T* d_in = make_device_input<T>(n_elems);
@@ -111,8 +166,8 @@ void run_stride(const char* label, size_t stride_bytes) {
     }
 
     size_t stride_elems = stride_bytes / sizeof(T);
-    size_t n_elems = static_cast<size_t>(ITERS) * WARP * stride_elems;
-    size_t out_bytes = WARP * sizeof(unsigned long long);
+    size_t n_elems      = static_cast<size_t>(ITERS) * WARP * stride_elems;
+    size_t out_bytes    = WARP * sizeof(unsigned long long);
 
     T* d_in = make_device_input<T>(n_elems);
 
