@@ -38,7 +38,7 @@ __global__ void bench_kernel(const uint8_t* in, volatile unsigned int* sink) {
     unsigned int acc = 0;
 
     #pragma unroll 1
-    for (int k = 0; k < STRIDE_B; ++k) {
+    for (int k = 0; k < 2; ++k) {
         uint8_t v = ld_global_ca_u8(in + base + k);
 
         // Do a simple operation so the load is not optimized away.
